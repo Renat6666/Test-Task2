@@ -1,0 +1,77 @@
+name: inventory
+
+x-api-base: &api-base
+  image: python:3.12-slim
+  working_dir: /app
+  env_file: [.env]
+  volumes:
+    - ./:/app
+    - pydeps:/pydeps
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:17-alpine
+    env_file: [.env]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PUBLISHED_PORT}:5432"
+    healthcheck:
+      # $$ escapes Compose interpolation: the container reads its own env_file.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    ports:
+      - "${REDIS_PUBLISHED_PORT}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    <<: *api-base
+    ports:
+      - "${API_PUBLISHED_PORT}:8000"
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        echo '>> installing dependencies into the pydeps volume'
+        pip install --user --quiet --no-warn-script-location -r requirements.txt
+        echo '>> applying migrations'
+        python manage.py migrate --noinput
+        echo '>> starting development server on :8000'
+        exec python manage.py runserver 0.0.0.0:8000
+        # For a production-like run, swap the line above for:
+        #   exec python -m gunicorn config.wsgi:application --bind 0.0.0.0:8000
+
+  # One-off: `docker compose run --rm tests`
+  tests:
+    <<: *api-base
+    profiles: ["test"]
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        pip install --user --quiet --no-warn-script-location -r requirements.txt
+        python -m pytest -q
+
+volumes:
+  pgdata:
+  redisdata:
+  pydeps:
